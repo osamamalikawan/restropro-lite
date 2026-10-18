@@ -111,7 +111,7 @@ export function PosClient({
   const [lines, setLines] = useState<ReceiptLine[]>([]);
   const [coDelivery, setCoDelivery] = useState("");
   const [method, setMethod] = useState("Cash");
-  const [busy, setBusy] = useState<"save" | "kitchen" | "invoice" | null>(null);
+  const [busy, setBusy] = useState<"save" | "kitchen" | "print" | null>(null);
   const [error, setError] = useState("");
   const [lastReceipt, setLastReceipt] = useState<{ orderNo: number | string; total: number; offline?: boolean } | null>(null);
   const [printNote, setPrintNote] = useState("");
@@ -219,6 +219,7 @@ export function PosClient({
   // ---- checkout receipt (editable) ----
   function openCheckout() {
     if (cart.length === 0) return;
+    (document.activeElement as HTMLElement | null)?.blur?.(); // don't leave a menu card focused behind the popup
     setError("");
     setLines(
       cart.map((l) => ({ productId: l.productId, ...splitName(l.name), qty: String(l.qty), price: round(l.price), total: round(l.price * l.qty) }))
@@ -244,7 +245,7 @@ export function PosClient({
   const receiptDelivery = orderType === "delivery" ? num(coDelivery) : 0;
   const receiptTotal = receiptSub + receiptDelivery;
 
-  async function finish(action: "save" | "kitchen" | "invoice") {
+  async function finish(action: "save" | "kitchen" | "print") {
     if (liveLines.length === 0) return setError("The order needs at least one item.");
     if (liveLines.some((l) => num(l.qty) <= 0 || !Number.isInteger(num(l.qty)))) return setError("Quantities must be whole numbers.");
     if (liveLines.some((l) => num(l.price) < 0 || num(l.total) < 0)) return setError("Prices can't be negative.");
@@ -311,13 +312,48 @@ export function PosClient({
     setCheckoutOpen(false);
     resetOrder();
     if (action !== "save") {
-      try {
-        await printSale(action, snap, orderNo);
-      } catch (e) {
-        setPrintNote(`Order saved, but it didn't print: ${e instanceof Error ? e.message : String(e)}`);
+      // "print" = kitchen slip, then the customer invoice. One failing doesn't stop the other.
+      const jobs: ("kitchen" | "invoice")[] = action === "kitchen" ? ["kitchen"] : ["kitchen", "invoice"];
+      const failed: string[] = [];
+      for (const job of jobs) {
+        try {
+          await printSale(job, snap, orderNo);
+        } catch (e) {
+          failed.push(`${job === "kitchen" ? "Kitchen slip" : "Invoice"}: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
+      if (failed.length) setPrintNote(`Order saved, but it didn't print. ${failed.join(" / ")}`);
     }
   }
+
+  // Keyboard: Enter opens checkout on the POS screen; inside the checkout popup Enter does the Kitchen print.
+  // (Typing in a field, or a focused button, keeps its normal Enter behavior on the POS screen; the popup
+  // ignores key-repeat so holding Enter can't print twice.)
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+  const openCheckoutRef = useRef(openCheckout);
+  openCheckoutRef.current = openCheckout;
+  const stateRef = useRef({ checkoutOpen, busy, cartLen: cart.length });
+  stateRef.current = { checkoutOpen, busy, cartLen: cart.length };
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Enter" || e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName ?? "";
+      const st = stateRef.current;
+      if (st.checkoutOpen) {
+        if (st.busy !== null || tag === "BUTTON" || tag === "SELECT" || tag === "TEXTAREA") return; // a focused button keeps its own Enter
+        e.preventDefault();
+        finishRef.current("kitchen");
+      } else if (st.cartLen > 0 && !/^(INPUT|TEXTAREA|SELECT)$/.test(tag) && (tag !== "BUTTON" || t?.closest("[data-pos-card]"))) {
+        // (after tapping a product its card keeps focus: Enter must open checkout, not add it again)
+        e.preventDefault();
+        openCheckoutRef.current();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // ---- menu view ----
   const available = useMemo(() => (products ?? []).filter((p) => p.is_available !== false), [products]);
@@ -453,7 +489,7 @@ export function PosClient({
           disabled={cart.length === 0}
           className="w-full rounded-xl bg-chili-500 py-3 text-base font-bold text-white transition hover:bg-chili-600 disabled:opacity-40"
         >
-          Checkout
+          Checkout <kbd className="ml-1 rounded border border-white/40 px-1 text-[10px] font-normal opacity-80">Enter</kbd>
         </button>
       </div>
     </div>
@@ -516,6 +552,7 @@ export function PosClient({
               return (
                 <button
                   key={c}
+                  data-pos-card
                   onClick={() => setCategory(c)}
                   style={style}
                   className={`shrink-0 rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${
@@ -557,6 +594,7 @@ export function PosClient({
               return (
                 <button
                   key={p.id}
+                  data-pos-card
                   onClick={() => addToCart(p)}
                   style={col ? { backgroundColor: hexToRgba(col, 0.16), borderColor: hexToRgba(col, 0.65) } : undefined}
                   className={`group overflow-hidden rounded-xl border text-center transition active:scale-[0.98] ${col ? "hover:brightness-110" : "border-line bg-surface hover:border-chili-500"}`}
@@ -622,17 +660,15 @@ export function PosClient({
         busy={busy !== null}
         footer={
           <>
-            <button onClick={() => setCheckoutOpen(false)} disabled={busy !== null} className="rounded-lg border border-line px-4 py-2 text-sm hover:bg-raised disabled:opacity-50">
-              Back
-            </button>
             <button onClick={() => finish("save")} disabled={busy !== null} className="inline-flex items-center gap-1.5 rounded-lg border border-line px-4 py-2 text-sm font-semibold hover:bg-raised disabled:opacity-50">
               {busy === "save" ? <Spinner size={14} /> : <Save size={14} />} Save
             </button>
-            <button onClick={() => finish("kitchen")} disabled={busy !== null} className="inline-flex items-center gap-1.5 rounded-lg border border-chili-500 px-4 py-2 text-sm font-semibold text-chili-400 hover:bg-chili-500/10 disabled:opacity-50">
+            <button onClick={() => finish("kitchen")} disabled={busy !== null} title="Enter" className="inline-flex items-center gap-1.5 rounded-lg border border-chili-500 px-4 py-2 text-sm font-semibold text-chili-400 hover:bg-chili-500/10 disabled:opacity-50">
               {busy === "kitchen" ? <Spinner size={14} /> : <ChefHat size={14} />} Kitchen print
+              <kbd className="rounded border border-chili-500/40 px-1 text-[10px] font-normal opacity-70">Enter</kbd>
             </button>
-            <button onClick={() => finish("invoice")} disabled={busy !== null} className="inline-flex items-center gap-1.5 rounded-lg bg-chili-500 px-4 py-2 text-sm font-semibold text-white hover:bg-chili-600 disabled:opacity-50">
-              {busy === "invoice" ? <Spinner size={14} /> : <Printer size={14} />} Invoice print
+            <button onClick={() => finish("print")} disabled={busy !== null} title="Prints the kitchen slip and the invoice" className="inline-flex items-center gap-1.5 rounded-lg bg-chili-500 px-4 py-2 text-sm font-semibold text-white hover:bg-chili-600 disabled:opacity-50">
+              {busy === "print" ? <Spinner size={14} /> : <Printer size={14} />} Print
             </button>
           </>
         }

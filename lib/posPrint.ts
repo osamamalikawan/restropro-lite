@@ -64,6 +64,8 @@ export type SaleSnapshot = {
   serviceLabel?: string; // e.g. "Service charge (10%)"
   total: number;
   payments: { method: string; amount: number }[];
+  /** Reprints (Sales page): when the order was taken, instead of "now". */
+  createdAt?: string;
   /** Order type in English for the kitchen slip's boxed heading ("Take Away", "Dine In", "Delivery"). */
   orderTypeEn?: string;
   /** Lite app: print the fixed labels (Subtotal, Total...) in Urdu as well. */
@@ -573,8 +575,9 @@ export function buildInvoice(s: SaleSnapshot, orderNo: string | number): number[
 
   // ---- order info ----
   b.bold(true).line(`Order #${orderNo}`).bold(false);
-  b.line(new Date().toLocaleString());
-  b.line(s.orderTypeLabel).line(`Cashier: ${s.cashier}`);
+  b.line(new Date(s.createdAt ?? Date.now()).toLocaleString());
+  b.line(s.orderTypeLabel);
+  if (s.cashier) b.line(`Cashier: ${s.cashier}`);
   if (s.customerName || s.customerPhone) b.line(`Customer: ${[s.customerName, s.customerPhone].filter(Boolean).join(" ")}`);
   printOrderExtras(b, s, false);
   rule();

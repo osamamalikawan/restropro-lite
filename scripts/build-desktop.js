@@ -27,9 +27,31 @@ const signupBackup = '.signup-backup';
 const moved = []; // [from, to] pairs to undo, in order
 const copied = []; // files created from *.desktop.tsx, deleted on restore
 
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// On Windows a rename fails with EPERM/EBUSY while anything (dev server, editor, Explorer, antivirus scan)
+// has the folder open. Those locks are often brief, so retry for a few seconds before giving up.
+function renameWithRetry(from, to) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (e) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e;
+      if (attempt >= 10) {
+        throw new Error(
+          `Could not move "${from}" (${e.code}). Something has it open: stop "npm run dev", close editors/terminals/Explorer windows ` +
+            `inside it, wait for antivirus to finish scanning, then run the build again.`
+        );
+      }
+      sleep(700);
+    }
+  }
+}
+
 function moveAway(from, to) {
   if (!fs.existsSync(from)) return false;
-  fs.renameSync(from, to);
+  renameWithRetry(from, to);
   moved.push([from, to]);
   return true;
 }
@@ -72,7 +94,7 @@ function restoreAll() {
     if (fs.existsSync(f)) fs.unlinkSync(f);
   }
   for (const [from, to] of moved.slice().reverse()) {
-    if (fs.existsSync(to)) fs.renameSync(to, from);
+    if (fs.existsSync(to)) renameWithRetry(to, from);
   }
   if (fs.existsSync(webConfigBackup)) {
     fs.copyFileSync(webConfigBackup, 'next.config.js');

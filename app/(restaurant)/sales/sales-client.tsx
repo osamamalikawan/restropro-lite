@@ -1,7 +1,10 @@
 "use client";
 import { Fragment, useEffect, useRef, useState } from "react";
+import { Printer } from "lucide-react";
 import { LoadingOverlay, PageLoader, Spinner } from "@/components/ui/loading";
 import { LoadMore, useDebounced } from "@/components/ui/load-more";
+import { getSettings } from "@/lib/posData";
+import { printSale, type SaleSnapshot } from "@/lib/posPrint";
 import { CancelOrderDialog, cancelledLabel, stageOf } from "@/components/cancel-order-dialog";
 
 const PAGE = 50; // orders per page: 50 load instantly, the rest on scroll / "Load more"
@@ -28,6 +31,7 @@ type Sale = {
 };
 
 const TYPE_LABEL: Record<Sale["order_type"], string> = { dine_in: "Dine In", takeaway: "Takeaway", delivery: "Delivery" };
+const TYPE_LABEL_UR: Record<Sale["order_type"], string> = { dine_in: "ڈائن اِن", takeaway: "ٹیک اوے", delivery: "ڈیلیوری" };
 const STATUS_STYLE: Record<Sale["status"], string> = {
   completed: "bg-basil-500/20 text-basil-400",
   unpaid: "bg-turmeric-500/20 text-turmeric-400",
@@ -48,6 +52,7 @@ export function SalesClient({ canCancel }: { canCancel: boolean }) {
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<Sale | null>(null); // the order the cancel popup is for
   const [cancelError, setCancelError] = useState("");
+  const [printingId, setPrintingId] = useState<string | null>(null);
   const latest = useRef(0); // ignores a slow answer that a newer search has already replaced
 
   async function loadPage(offset: number) {
@@ -117,6 +122,46 @@ export function SalesClient({ canCancel }: { canCancel: boolean }) {
     setCancelTarget(null);
   }
 
+  /** Prints the customer receipt again for an order already in the list. */
+  async function printReceipt(s: Sale) {
+    setError("");
+    setPrintingId(s.id);
+    try {
+      const d = await getSettings();
+      const st = d.settings ?? {};
+      const urdu = st.urdu_enabled === true;
+      const snap: SaleSnapshot = {
+        restaurantName: d.restaurant?.name ?? "",
+        address: d.restaurant?.address ?? "",
+        phone: d.restaurant?.phone ?? "",
+        header: st.receipt_header ?? "",
+        footer: st.receipt_footer ?? "",
+        paper: String(st.paper_width ?? "80"),
+        template: String(st.receipt_template ?? "classic"),
+        cashier: "",
+        orderTypeLabel: urdu ? TYPE_LABEL_UR[s.order_type] : TYPE_LABEL[s.order_type],
+        customerName: s.customers?.name ?? "",
+        customerPhone: s.customers?.phone ?? "",
+        items: s.sale_items.map((it) => ({ name: it.name, qty: it.quantity, price: it.unit_price })),
+        subtotal: Number(s.subtotal) || 0,
+        delivery: Number(s.delivery_charge) || 0,
+        taxLabel: "",
+        tax: Number(s.tax) || 0,
+        fee: 0,
+        total: Number(s.total) || 0,
+        payments: s.sale_payments.map((p) => ({ method: p.method, amount: Number(p.amount) || 0 })),
+        createdAt: s.created_at,
+        urdu,
+        fbr: null,
+      };
+      await printSale("invoice", snap, s.display_id ?? s.order_no);
+    } catch (e) {
+      setError(`Couldn't print the receipt: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPrintingId(null);
+    }
+  }
+
   const filtered = sales ?? [];
 
   return (
@@ -178,6 +223,17 @@ export function SalesClient({ canCancel }: { canCancel: boolean }) {
                       {s.status === "cancelled" && s.cancel_note && <div className="mt-1 max-w-[220px] truncate text-[11px] text-ink-faint" title={s.cancel_note}>{s.cancel_note}</div>}
                     </td>
                     <td className="p-3 text-right">
+                      {s.status !== "cancelled" && (
+                        <button
+                          onClick={() => printReceipt(s)}
+                          disabled={printingId === s.id}
+                          className="mr-3 inline-flex items-center gap-1 text-xs text-ink-faint hover:text-chili-400 disabled:opacity-50"
+                          title="Print the receipt again"
+                        >
+                          {printingId === s.id ? <Spinner size={11} /> : <Printer size={12} />}
+                          Receipt
+                        </button>
+                      )}
                       {canCancel && s.status !== "cancelled" && (
                         <button
                           onClick={() => askCancel(s)}

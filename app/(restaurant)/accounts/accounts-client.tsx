@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ArrowDown, Equal, Hourglass, FileDown } from "lucide-react";
+import { ArrowUp, ArrowDown, Equal, FileDown } from "lucide-react";
 import { Modal, Field, inputCls, btnPrimary, btnGhost } from "@/components/ui/modal";
 import { Panel, PanelHead, TableScroll, Th, Td, EmptyRow, Badge, KpiCard, addBtnCls, searchInputCls } from "@/components/ui/panel";
 import { DateRange, rangeToQuery } from "@/components/ui/date-range";
@@ -10,9 +10,7 @@ import { LoadMore, useDebounced } from "@/components/ui/load-more";
 import { buildTablePdf, downloadPdf } from "@/lib/simple-pdf";
 
 type AccountEntry = { id: string; txn_date: string; created_at?: string; description: string; category: string; type: "income" | "expense"; amount: number };
-type Supplier = { id: string };
-type Purchase = { supplier_id: string | null; total_cost: number };
-type LedgerEntry = { supplier_id: string; amount: number };
+type SoldProduct = { name: string; quantity: number; total: number };
 const PAGE = 50;
 
 export function AccountsClient() {
@@ -25,9 +23,6 @@ export function AccountsClient() {
   const [from, setFrom] = useState(""); // local date+time strings from the range boxes
   const [to, setTo] = useState("");
   const latest = useRef(0); // ignores a slow answer that a newer search/filter has already replaced
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [purchases, setPurchases] = useState<Purchase[]>([]);
-  const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -40,6 +35,9 @@ export function AccountsClient() {
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [sold, setSold] = useState<{ products: SoldProduct[]; totalQuantity: number; totalAmount: number } | null>(null);
+  const [soldError, setSoldError] = useState("");
+  const soldLatest = useRef(0);
 
   /** Fetches one page of the ledger for the current search + date range. offset 0 starts over. */
   async function loadPage(offset: number) {
@@ -60,6 +58,26 @@ export function AccountsClient() {
     if (res.data?.totals) setTotals(res.data.totals);
     setEntries((prev) => (offset === 0 ? res.data?.accounts ?? [] : [...prev, ...(res.data?.accounts ?? [])]));
   }
+
+  /** Products sold in the selected date range (not affected by the ledger search box). */
+  async function loadSold() {
+    const id = ++soldLatest.current;
+    const params = new URLSearchParams(rangeToQuery(from, to, true));
+    const res = await fetchJson<{ products: SoldProduct[]; totalQuantity: number; totalAmount: number }>(`/api/accounts/products?${params}`);
+    if (id !== soldLatest.current) return;
+    if (!res.ok) {
+      setSoldError(res.error);
+      return;
+    }
+    setSoldError("");
+    setSold(res.data ?? { products: [], totalQuantity: 0, totalAmount: 0 });
+  }
+
+  // date range changed -> recount the products sold
+  useEffect(() => {
+    loadSold();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [from, to]);
 
   /** Reload from the first page (new search / range / after saving an entry). */
   async function reload() {
@@ -83,27 +101,7 @@ export function AccountsClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, from, to]);
 
-  // supplier figures don't depend on the ledger filters: load them once
-  useEffect(() => {
-    (async () => {
-      const [sRes, pRes, lRes] = await Promise.all([
-        fetchJson<{ suppliers: Supplier[] }>("/api/suppliers"),
-        fetchJson<{ purchases: Purchase[] }>("/api/restock?limit=1000"),
-        fetchJson<{ entries: LedgerEntry[] }>("/api/supplier-ledger?limit=1000"),
-      ]);
-      setSuppliers(sRes.ok ? sRes.data?.suppliers ?? [] : []);
-      setPurchases(pRes.ok ? pRes.data?.purchases ?? [] : []);
-      setLedger(lRes.ok ? lRes.data?.entries ?? [] : []);
-    })();
-  }, []);
-
   const { income, expense } = totals;
-  const supplierPayable = suppliers.reduce((sum, s) => {
-    const purchased = purchases.filter((p) => p.supplier_id === s.id).reduce((x, p) => x + Number(p.total_cost), 0);
-    const paid = ledger.filter((l) => l.supplier_id === s.id).reduce((x, l) => x + Number(l.amount), 0);
-    return sum + Math.max(0, purchased - paid);
-  }, 0);
-
   // Running balance: the newest row shows the net of the whole selected range, and each older row is
   // that minus everything booked after it. Works page by page, so loading more never changes what
   // is already on screen.
@@ -216,11 +214,10 @@ export function AccountsClient() {
 
   return (
     <main className="min-h-screen bg-canvas text-ink-strong p-6 md:p-8">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
         <KpiCard label="Total income" value={<span className="flex items-center gap-1.5 text-basil-400"><ArrowUp className="h-4 w-4" />{fmtMoney(income)}</span>} />
         <KpiCard label="Total expense" value={<span className="flex items-center gap-1.5 text-crimson-400"><ArrowDown className="h-4 w-4" />{fmtMoney(expense)}</span>} />
         <KpiCard label="Net income" value={<span className="flex items-center gap-1.5"><Equal className="h-4 w-4" />{fmtMoney(income - expense)}</span>} />
-        <KpiCard label="Supplier payable" value={<span className="flex items-center gap-1.5 text-turmeric-500"><Hourglass className="h-4 w-4" />{fmtMoney(supplierPayable)}</span>} />
       </div>
 
       <Panel loading={loading}>
@@ -282,6 +279,45 @@ export function AccountsClient() {
         </TableScroll>
         <LoadMore hasMore={hasMore} loading={loadingMore} onMore={loadMore} />
       </Panel>
+
+      <div className="mt-5">
+        <Panel loading={sold === null && !soldError}>
+          <PanelHead title="Products sold" subtitle="How many of each product were sold, and the amount, for the selected date range" />
+          {soldError && (
+            <p className="mx-5 mt-4 rounded-lg border border-crimson-500/30 bg-crimson-500/10 px-3 py-2 text-xs text-crimson-400">Couldn&apos;t load products sold: {soldError}</p>
+          )}
+          <TableScroll>
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-line">
+                  <Th>Product</Th>
+                  <Th>Quantity sold</Th>
+                  <Th>Total amount</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {(sold?.products ?? []).map((p, i) => (
+                  <tr key={`${p.name}-${i}`} className="border-b border-line last:border-0">
+                    <Td className="font-medium text-ink-strong"><span dir="auto">{p.name}</span></Td>
+                    <Td className="font-mono">{p.quantity.toLocaleString()}</Td>
+                    <Td className="font-mono font-medium">{fmtMoney(p.total)}</Td>
+                  </tr>
+                ))}
+                {sold && !soldError && sold.products.length === 0 && <EmptyRow colSpan={3} label={from || to ? "No products sold in this date range." : "No products sold yet."} />}
+              </tbody>
+              {sold && sold.products.length > 0 && (
+                <tfoot>
+                  <tr className="border-t border-line bg-raised/50 font-semibold">
+                    <Td>Total</Td>
+                    <Td className="font-mono">{sold.totalQuantity.toLocaleString()}</Td>
+                    <Td className="font-mono">{fmtMoney(sold.totalAmount)}</Td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </TableScroll>
+        </Panel>
+      </div>
 
       <Modal
         busy={saving}

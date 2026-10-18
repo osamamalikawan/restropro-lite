@@ -32,9 +32,10 @@ export function useOnline(pollMs = 8000) {
   return { online, recheck };
 }
 
-/** Screens that keep working with no internet (they read this computer's saved data). Every
- *  other page shows the "You're offline" notice instead of loading forever. */
-export const OFFLINE_OK_PATHS = ["/pos", "/sales", "/settings"];
+/** Screens that keep working with no internet. POS and Sales read this computer's local database;
+ *  the others show the last data the cloud sent and queue any change until the connection is back
+ *  (see the desktop shell's offline_cache.rs). Any other page shows the "You're offline" notice. */
+export const OFFLINE_OK_PATHS = ["/dashboard", "/pos", "/sales", "/menu", "/expenses", "/accounts", "/settings", "/notifications"];
 
 export function isOfflineOk(pathname: string): boolean {
   const p = pathname.replace(/\/+$/, "") || "/";

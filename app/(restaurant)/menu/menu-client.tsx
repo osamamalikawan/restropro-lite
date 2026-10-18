@@ -9,7 +9,6 @@ import { Panel, PanelHead, addBtnCls } from "@/components/ui/panel";
 import { Switch } from "@/components/ui/switch";
 import { GalleryPickerModal } from "@/components/gallery-picker-modal";
 import { fmtMoney } from "@/lib/format";
-import { RecipeModal } from "./recipe-modal";
 import { CATEGORY_SWATCHES } from "@/lib/urdu";
 
 type Category = { id: string; name: string; name_ur?: string | null; sort_order: number; is_active: boolean; color?: string | null };
@@ -28,7 +27,6 @@ export function MenuClient() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
-  const [recipeProduct, setRecipeProduct] = useState<Product | null>(null);
   // Add / edit category popup
   const [catModalOpen, setCatModalOpen] = useState(false);
   const [editingCatId, setEditingCatId] = useState<string | null>(null);
@@ -424,7 +422,7 @@ export function MenuClient() {
         open={modalOpen}
         // Esc / backdrop click closes only the popup on top: while the recipe popup is open, this one stays.
         onClose={() => {
-          if (!recipeProduct) setModalOpen(false);
+          setModalOpen(false);
         }}
         busy={saving}
         title={editingId ? "Edit menu item" : "Add menu item"}
@@ -504,8 +502,6 @@ export function MenuClient() {
           }}
         />
       )}
-
-      {recipeProduct && <RecipeModal productId={recipeProduct.id} productName={recipeProduct.name} onClose={() => setRecipeProduct(null)} />}
     </main>
   );
 }

@@ -57,7 +57,9 @@ export async function POST(req: Request) {
 
   const name = row.name?.trim();
   if (!name) return NextResponse.json({ error: "Enter a category name" }, { status: 400 });
-  const { error } = await admin.from("expense_categories").insert({ restaurant_id: session.restaurantId, name });
+  // An id made on the device (offline) lets the upload be repeated safely: same id, same row.
+  const id = typeof row.id === "string" && /^[0-9a-f-]{36}$/i.test(row.id) ? row.id : undefined;
+  const { error } = await admin.from("expense_categories").upsert({ ...(id ? { id } : {}), restaurant_id: session.restaurantId, name });
   if (error) {
     if (error.code === "23505") return NextResponse.json({ error: "That category already exists" }, { status: 409 });
     return NextResponse.json({ error: error.message }, { status: 500 });

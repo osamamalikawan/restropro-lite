@@ -17,11 +17,24 @@ Pages: Dashboard, POS, Sales, Menu, Expenses, Accounts, Notifications, Settings.
   If a product name has a "( )" part, it is treated as a description and the numbers inside it can be changed for that order
   (for example "Fries (250g)" -> "Fries (300g)"). Delivery charge is editable too.
 - Kitchen print is drawn as one image: black "Kitchen Print" band, boxed order type, customer ("Walking Customer" by default), inverted order number with date and time, an Urdu item table (تعداد / آئٹم نام / رقم) with each line's amount, the cashier and total quantity (کل تعداد), and the total amount (کل رقم). See `app/pos` + `lib/posPrint.ts` (`renderKitchenSlip`).
-- Checkout buttons: **Save**, **Kitchen print**, **Invoice print**. All three complete the order as fully paid.
+- Checkout buttons: **Save**, **Kitchen print** and **Print** (kitchen slip + invoice together). All three complete the order as fully paid. Keyboard: **Enter** on the POS screen opens checkout; **Enter** inside the checkout popup does the Kitchen print.
 - Tax is forced to 0 on the server (`app/api/sales/route.ts` and `app/api/device/sales/route.ts`), whatever the full app's
   tax settings say.
 - Removed: ticket rail, unpaid orders, riders, customers, inventory, restock, recipes, suppliers, ledgers, employees,
   attendance, permissions page, signup, cron jobs.
+
+## Offline
+- POS and Sales run from the PC's local database (as before).
+- Dashboard, Menu, Expenses, Accounts, Settings and Notifications open offline with the last data the cloud sent.
+  The desktop shell remembers every successful read and also pre-loads each screen in the background (about every 15 min).
+- Changes made offline are queued and shown straight away: menu products and categories (add, edit, delete, reorder), expenses,
+  expense categories, payment methods (add, remove, reorder), settings and marking notifications read. They upload, oldest
+  first, as soon as the cloud answers again, as the cashier who made them. A change the server refuses is kept and shown
+  in the sync status.
+- Accounts also has a "Products sold" table (quantity and total amount per product, for the selected date range) and Sales has a Receipt button that reprints an order's customer receipt.
+- Dashboard and Accounts show the last synced numbers; they don't include expenses added offline until the next sync.
+- Not available offline: uploading photos for menu items.
+- This needs the matching shell change (`lite-shell-offline.patch` in the shell repo).
 
 ## Run / deploy
 1. `npm install`
