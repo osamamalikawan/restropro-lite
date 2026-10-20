@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireStaffSession } from "@/lib/auth/require-staff";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-/** Products sold in a date range: { products: [{ name, quantity, total }], totalQuantity, totalAmount }.
+/** Products sold in a date range: { products: [{ productId, name, quantity, total }], totalQuantity, totalAmount }.
  *  ?from= & ?to= are ISO date-times (inclusive), the same as /api/accounts. Cancelled orders are left out.
  *  Grouped by product (product_id when the order line has one, otherwise by the name on the line); the
  *  amount is what was actually charged (unit price x quantity, so prices edited at checkout count). */
@@ -17,7 +17,7 @@ export async function GET(req: Request) {
   const toOk = to && !Number.isNaN(Date.parse(to)) ? new Date(to).toISOString() : null;
 
   const admin = createAdminClient();
-  const groups = new Map<string, { name: string; quantity: number; total: number }>();
+  const groups = new Map<string, { productId: string | null; name: string; quantity: number; total: number }>();
   const PAGE = 500;
   const MAX_PAGES = 40; // 20,000 orders: a cap so a huge range can't hang the request
 
@@ -37,12 +37,13 @@ export async function GET(req: Request) {
         const qty = Number(it.quantity) || 0;
         const total = (Number(it.unit_price) || 0) * qty;
         const name = String(it.name ?? "");
-        const key = typeof it.product_id === "string" && it.product_id ? it.product_id : `n:${name}`;
+        const productId = typeof it.product_id === "string" && it.product_id ? it.product_id : null;
+        const key = productId ?? `n:${name}`;
         const g = groups.get(key);
         if (g) {
           g.quantity += qty;
           g.total += total;
-        } else groups.set(key, { name, quantity: qty, total });
+        } else groups.set(key, { productId, name, quantity: qty, total });
       }
     }
     if (sales.length < PAGE) break;

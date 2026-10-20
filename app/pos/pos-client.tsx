@@ -1,9 +1,8 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ChefHat, Minus, Plus, Printer, Save, Search, ShoppingBag, Trash2, X } from "lucide-react";
+import { ChefHat, Copy, Minus, Plus, Printer, Save, Search, ShoppingBag, Trash2, X } from "lucide-react";
 import { PageLoader, Spinner } from "@/components/ui/loading";
-import { Modal } from "@/components/ui/modal";
 import { readFast, pullAndCache, startBackgroundSync } from "@/lib/sync";
 import { printSale, type SaleSnapshot } from "@/lib/posPrint";
 import { getProducts, getSettings, getPaymentMethods, submitSale, isTauri } from "@/lib/posData";
@@ -12,9 +11,11 @@ import { displayName, hexToRgba, isHexColor } from "@/lib/urdu";
 /* Restro Pro Lite POS.
  * - Item and category names follow Settings -> "Show item & category names in Urdu" (name_ur, English when missing).
  * - No tables, no order notes / item notes, no tax, no discount.
- * - Checkout is an editable receipt: quantity and unit price are editable, the line total is read-only (qty x price).
- *   Numbers inside a product's "( )" part are treated as a description and can be changed per order.
- *   "Save", "Kitchen print" and "Invoice print" all complete the order (fully paid). */
+ * - The order sidebar IS the checkout: every line has an editable quantity and unit price, a read-only total
+ *   (qty x price), and numbers inside the product's "( )" part are a description that can be changed per order.
+ *   "Copy" adds another line of the same product under it, so one product can be sold at two prices.
+ *   Save / Kitchen print / Print (kitchen + invoice) all complete the order (fully paid).
+ *   Enter = Kitchen print. */
 
 type CategoryRef = { name: string; name_ur?: string | null; sort_order?: number; color?: string | null };
 type Product = {
@@ -26,18 +27,17 @@ type Product = {
   image_url?: string | null;
   menu_categories?: CategoryRef | CategoryRef[] | null;
 };
-type CartLine = { productId: string; name: string; price: number; qty: number };
 type OrderType = "dine_in" | "takeaway" | "delivery";
-/** One row of the checkout receipt. Numbers are kept as text while typing. The part of the name written in ( ) is the
+/** One line of the order. Numbers are kept as text while typing. The part of the name written in ( ) is the
  *  description: `parts` is that text split around its numbers (odd positions are the editable numbers). */
-type ReceiptLine = {
+type Line = {
+  id: string; // unique per line: the same product can appear on several lines (copies) with different prices
   productId: string;
   prefix: string; // name before the "("
   suffix: string; // name after the ")"
   parts: string[] | null; // null when the name has no ( ) part
   qty: string;
   price: string;
-  total: string; // derived, never typed
 };
 
 function splitName(name: string): { prefix: string; suffix: string; parts: string[] | null } {
@@ -45,11 +45,12 @@ function splitName(name: string): { prefix: string; suffix: string; parts: strin
   if (!m) return { prefix: name, suffix: "", parts: null };
   return { prefix: m[1], suffix: m[3], parts: m[2].split(/(\d+(?:\.\d+)?)/) };
 }
-const composeName = (l: ReceiptLine) => (l.parts ? `${l.prefix}(${l.parts.join("")})${l.suffix}`.replace(/\s+/g, " ").trim() : l.prefix);
+const composeName = (l: Line) => (l.parts ? `${l.prefix}(${l.parts.join("")})${l.suffix}`.replace(/\s+/g, " ").trim() : l.prefix);
 
 const fmt = (n: number) => Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
 const num = (v: string) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const round = (n: number, d = 4) => String(Math.round(n * 10 ** d) / 10 ** d);
+const lineTotal = (l: Line) => Math.round(num(l.qty) * num(l.price) * 100) / 100;
 
 const firstCat = (p: Product) => (Array.isArray(p.menu_categories) ? p.menu_categories[0] : p.menu_categories) ?? null;
 const categoryOf = (p: Product) => firstCat(p)?.name || "Other";
@@ -94,7 +95,7 @@ export function PosClient({
   const [profile, setProfile] = useState({ address: "", phone: "", header: "", footer: "", paper: "80", template: "classic", urdu: false });
   const urduOn = profile.urdu;
   const [methods, setMethods] = useState<string[]>(["Cash"]);
-  const [cart, setCart] = useState<CartLine[]>([]);
+  const [cart, setCart] = useState<Line[]>([]);
   const [orderType, setOrderType] = useState<OrderType>("takeaway");
   const [custName, setCustName] = useState("");
   const [custPhone, setCustPhone] = useState("");
@@ -106,10 +107,6 @@ export function PosClient({
   const [sheetOpen, setSheetOpen] = useState(false);
   const [brokenImgs, setBrokenImgs] = useState<Record<string, true>>({});
 
-  // checkout
-  const [checkoutOpen, setCheckoutOpen] = useState(false);
-  const [lines, setLines] = useState<ReceiptLine[]>([]);
-  const [coDelivery, setCoDelivery] = useState("");
   const [method, setMethod] = useState("Cash");
   const [busy, setBusy] = useState<"save" | "kitchen" | "print" | null>(null);
   const [error, setError] = useState("");
@@ -187,25 +184,43 @@ export function PosClient({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // ---- cart ----
+  // ---- order: the sidebar is the editable receipt ----
+  const uid = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Math.random()).slice(2));
   function addToCart(p: Product) {
     setLastReceipt(null);
     setCart((prev) => {
-      const ex = prev.find((l) => l.productId === p.id);
-      if (ex) return prev.map((l) => (l.productId === p.id ? { ...l, qty: l.qty + 1 } : l));
-      return [...prev, { productId: p.id, name: displayName(p, urduOn), price: Number(p.price) || 0, qty: 1 }];
+      const ex = prev.find((l) => l.productId === p.id); // the first line of that product
+      if (ex) return prev.map((l) => (l.id === ex.id ? { ...l, qty: String(num(l.qty) + 1) } : l));
+      return [...prev, { id: uid(), productId: p.id, ...splitName(displayName(p, urduOn)), qty: "1", price: round(Number(p.price) || 0) }];
     });
   }
   function changeQty(id: string, delta: number) {
-    setCart((prev) => prev.map((l) => (l.productId === id ? { ...l, qty: l.qty + delta } : l)).filter((l) => l.qty > 0));
+    setCart((prev) => prev.map((l) => (l.id === id ? { ...l, qty: String(num(l.qty) + delta) } : l)).filter((l) => l.id !== id || num(l.qty) > 0));
   }
   function removeLine(id: string) {
-    setCart((prev) => prev.filter((l) => l.productId !== id));
+    setCart((prev) => prev.filter((l) => l.id !== id));
   }
-  const subtotal = cart.reduce((s, l) => s + l.price * l.qty, 0);
-  const itemCount = cart.reduce((s, l) => s + l.qty, 0);
-  const delivery = orderType === "delivery" ? Number(deliveryCharge) || 0 : 0;
-  const cartTotal = subtotal + delivery;
+  /** Adds another line of the same product right under this one (own quantity, price and description). */
+  function copyLine(id: string) {
+    setCart((prev) => {
+      const i = prev.findIndex((l) => l.id === id);
+      if (i < 0) return prev;
+      const copy: Line = { ...prev[i], id: uid(), qty: "1", parts: prev[i].parts ? [...prev[i].parts!] : null };
+      return [...prev.slice(0, i + 1), copy, ...prev.slice(i + 1)];
+    });
+  }
+  function editLine(id: string, field: "qty" | "price", value: string) {
+    setCart((prev) => prev.map((l) => (l.id === id ? { ...l, [field]: value } : l)));
+  }
+  function editDesc(id: string, part: number, value: string) {
+    setCart((prev) => prev.map((l) => (l.id === id && l.parts ? { ...l, parts: l.parts.map((t, k) => (k === part ? value : t)) } : l)));
+  }
+
+  const liveLines = cart.filter((l) => num(l.qty) > 0);
+  const itemCount = liveLines.reduce((n, l) => n + num(l.qty), 0);
+  const receiptSub = liveLines.reduce((n, l) => n + lineTotal(l), 0);
+  const receiptDelivery = orderType === "delivery" ? num(deliveryCharge) : 0;
+  const receiptTotal = receiptSub + receiptDelivery;
 
   function resetOrder() {
     setCart([]);
@@ -216,39 +231,10 @@ export function PosClient({
     setSheetOpen(false);
   }
 
-  // ---- checkout receipt (editable) ----
-  function openCheckout() {
-    if (cart.length === 0) return;
-    (document.activeElement as HTMLElement | null)?.blur?.(); // don't leave a menu card focused behind the popup
-    setError("");
-    setLines(
-      cart.map((l) => ({ productId: l.productId, ...splitName(l.name), qty: String(l.qty), price: round(l.price), total: round(l.price * l.qty) }))
-    );
-    setCoDelivery(orderType === "delivery" ? String(delivery) : "");
-    setCheckoutOpen(true);
-  }
-  function editLine(i: number, field: "qty" | "price", value: string) {
-    setLines((prev) =>
-      prev.map((l, idx) => {
-        if (idx !== i) return l;
-        const next = { ...l, [field]: value };
-        next.total = round(num(next.qty) * num(next.price)); // the total is always qty x price
-        return next;
-      })
-    );
-  }
-  function editDesc(i: number, part: number, value: string) {
-    setLines((prev) => prev.map((l, idx) => (idx === i && l.parts ? { ...l, parts: l.parts.map((t, k) => (k === part ? value : t)) } : l)));
-  }
-  const liveLines = lines.filter((l) => num(l.qty) > 0);
-  const receiptSub = liveLines.reduce((s, l) => s + num(l.total), 0);
-  const receiptDelivery = orderType === "delivery" ? num(coDelivery) : 0;
-  const receiptTotal = receiptSub + receiptDelivery;
-
   async function finish(action: "save" | "kitchen" | "print") {
     if (liveLines.length === 0) return setError("The order needs at least one item.");
     if (liveLines.some((l) => num(l.qty) <= 0 || !Number.isInteger(num(l.qty)))) return setError("Quantities must be whole numbers.");
-    if (liveLines.some((l) => num(l.price) < 0 || num(l.total) < 0)) return setError("Prices can't be negative.");
+    if (liveLines.some((l) => num(l.price) < 0)) return setError("Prices can't be negative.");
     setBusy(action);
     setError("");
     const items = liveLines.map((l) => ({ productId: l.productId, name: composeName(l), price: num(l.price), qty: num(l.qty) }));
@@ -309,7 +295,6 @@ export function PosClient({
     setLastReceipt({ orderNo, total: receiptTotal, offline: !!result.offline });
     setPrintNote("");
     setBusy(null);
-    setCheckoutOpen(false);
     resetOrder();
     if (action !== "save") {
       // "print" = kitchen slip, then the customer invoice. One failing doesn't stop the other.
@@ -326,30 +311,24 @@ export function PosClient({
     }
   }
 
-  // Keyboard: Enter opens checkout on the POS screen; inside the checkout popup Enter does the Kitchen print.
-  // (Typing in a field, or a focused button, keeps its normal Enter behavior on the POS screen; the popup
-  // ignores key-repeat so holding Enter can't print twice.)
+  // Keyboard: Enter = Kitchen print (completes the order). Works from the menu and from the quantity / price /
+  // description / delivery-charge boxes; not from the search or customer boxes, and a focused Save / Print
+  // button keeps its own Enter. Key-repeat is ignored so holding Enter can't print twice.
   const finishRef = useRef(finish);
   finishRef.current = finish;
-  const openCheckoutRef = useRef(openCheckout);
-  openCheckoutRef.current = openCheckout;
-  const stateRef = useRef({ checkoutOpen, busy, cartLen: cart.length });
-  stateRef.current = { checkoutOpen, busy, cartLen: cart.length };
+  const stateRef = useRef({ busy, cartLen: cart.length });
+  stateRef.current = { busy, cartLen: cart.length };
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Enter" || e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const st = stateRef.current;
+      if (st.busy !== null || st.cartLen === 0) return;
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName ?? "";
-      const st = stateRef.current;
-      if (st.checkoutOpen) {
-        if (st.busy !== null || tag === "BUTTON" || tag === "SELECT" || tag === "TEXTAREA") return; // a focused button keeps its own Enter
-        e.preventDefault();
-        finishRef.current("kitchen");
-      } else if (st.cartLen > 0 && !/^(INPUT|TEXTAREA|SELECT)$/.test(tag) && (tag !== "BUTTON" || t?.closest("[data-pos-card]"))) {
-        // (after tapping a product its card keeps focus: Enter must open checkout, not add it again)
-        e.preventDefault();
-        openCheckoutRef.current();
-      }
+      const ok = tag === "INPUT" ? t?.hasAttribute("data-line-input") : tag === "BUTTON" ? !!t?.closest("[data-pos-card]") : tag !== "TEXTAREA" && tag !== "SELECT";
+      if (!ok) return;
+      e.preventDefault();
+      finishRef.current("kitchen");
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -385,7 +364,7 @@ export function PosClient({
   const visible = available.filter(
     (p) => (category === "All" || categoryOf(p) === category) && (!q || p.name.toLowerCase().includes(q) || (p.name_ur ?? "").toLowerCase().includes(q))
   );
-  const qtyInCart = (id: string) => cart.find((l) => l.productId === id)?.qty ?? 0;
+  const qtyInCart = (id: string) => cart.filter((l) => l.productId === id).reduce((n, l) => n + num(l.qty), 0);
 
   const orderPanel = (
     <div className="flex h-full min-h-0 flex-col">
@@ -433,10 +412,6 @@ export function PosClient({
             <span className={LABEL}>Address</span>
             <input value={custAddress} onChange={(e) => setCustAddress(e.target.value)} className={FIELD} />
           </div>
-          <div>
-            <span className={LABEL}>Delivery charge (Rs)</span>
-            <input type="number" min="0" value={deliveryCharge} onChange={(e) => setDeliveryCharge(e.target.value)} className={FIELD} />
-          </div>
         </div>
       )}
 
@@ -446,26 +421,87 @@ export function PosClient({
         ) : (
           <ul className="space-y-2">
             {cart.map((l) => (
-              <li key={l.productId} className="rounded-lg border border-line bg-raised p-2.5">
+              <li key={l.id} className="rounded-lg border border-line bg-raised p-2.5">
                 <div className="flex items-start justify-between gap-2">
                   <span dir="auto" className="min-w-0 flex-1 text-base font-semibold leading-snug">
-                    {l.name}
+                    {`${l.prefix} ${l.suffix}`.trim() || "-"}
                   </span>
-                  <button onClick={() => removeLine(l.productId)} aria-label="Remove" className="text-ink-faint hover:text-crimson-400">
+                  <button onClick={() => copyLine(l.id)} aria-label="Copy item" title="Copy: add another line of this item with its own price" className="text-ink-faint hover:text-chili-400">
+                    <Copy size={14} />
+                  </button>
+                  <button onClick={() => removeLine(l.id)} aria-label="Remove" title="Remove" className="text-ink-faint hover:text-crimson-400">
                     <Trash2 size={14} />
                   </button>
                 </div>
-                <div className="mt-1.5 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => changeQty(l.productId, -1)} className="grid h-7 w-7 place-items-center rounded-md border border-line hover:border-chili-500">
-                      <Minus size={14} />
-                    </button>
-                    <span className="w-6 text-center font-mono text-sm">{l.qty}</span>
-                    <button onClick={() => changeQty(l.productId, 1)} className="grid h-7 w-7 place-items-center rounded-md border border-line hover:border-chili-500">
-                      <Plus size={14} />
-                    </button>
+                {l.parts && (
+                  <div dir="ltr" className="mt-1 flex flex-wrap items-center gap-1 text-sm text-ink-mid">
+                    <span>(</span>
+                    {l.parts.map((t, k) =>
+                      k % 2 ? (
+                        <input
+                          key={k}
+                          data-line-input
+                          type="number"
+                          step="any"
+                          value={t}
+                          onChange={(e) => editDesc(l.id, k, e.target.value)}
+                          aria-label="Description number"
+                          className="w-16 rounded-md border border-line bg-surface px-1.5 py-0.5 text-center font-mono text-sm outline-none focus:border-chili-500"
+                        />
+                      ) : (
+                        <span key={k} dir="auto" className="whitespace-pre">
+                          {t}
+                        </span>
+                      )
+                    )}
+                    <span>)</span>
                   </div>
-                  <span className="font-mono text-sm font-semibold">Rs {fmt(l.price * l.qty)}</span>
+                )}
+                <div className="mt-2 grid grid-cols-[auto_1fr_1fr] items-end gap-2">
+                  <div>
+                    <span className="mb-0.5 block text-[10px] font-bold uppercase tracking-wide text-ink-faint">Qty</span>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => changeQty(l.id, -1)} aria-label="Less" className="grid h-8 w-7 place-items-center rounded-md border border-line hover:border-chili-500">
+                        <Minus size={12} />
+                      </button>
+                      <input
+                        data-line-input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={l.qty}
+                        onChange={(e) => editLine(l.id, "qty", e.target.value)}
+                        aria-label="Quantity"
+                        className="h-8 w-12 rounded-md border border-line bg-surface px-1 text-center font-mono text-sm outline-none focus:border-chili-500"
+                      />
+                      <button onClick={() => changeQty(l.id, 1)} aria-label="More" className="grid h-8 w-7 place-items-center rounded-md border border-line hover:border-chili-500">
+                        <Plus size={12} />
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <span className="mb-0.5 block text-[10px] font-bold uppercase tracking-wide text-ink-faint">Price</span>
+                    <input
+                      data-line-input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={l.price}
+                      onChange={(e) => editLine(l.id, "price", e.target.value)}
+                      aria-label="Price"
+                      className="h-8 w-full min-w-0 rounded-md border border-line bg-surface px-2 text-right font-mono text-sm outline-none focus:border-chili-500"
+                    />
+                  </div>
+                  <div>
+                    <span className="mb-0.5 block text-[10px] font-bold uppercase tracking-wide text-ink-faint">Total</span>
+                    <input
+                      readOnly
+                      tabIndex={-1}
+                      value={fmt(lineTotal(l))}
+                      aria-label="Line total"
+                      className="h-8 w-full min-w-0 cursor-default rounded-md border border-line bg-surface/60 px-2 text-right font-mono text-sm font-semibold opacity-80 outline-none"
+                    />
+                  </div>
                 </div>
               </li>
             ))}
@@ -474,23 +510,69 @@ export function PosClient({
       </div>
 
       <div className="border-t border-line px-4 py-3">
-        {delivery > 0 && (
+        {error && <p className="mb-2 rounded-lg border border-crimson-500/30 bg-crimson-500/10 px-3 py-2 text-xs text-crimson-400">{error}</p>}
+        <div className="mb-3 grid grid-cols-2 gap-2">
+          {orderType === "delivery" && (
+            <div>
+              <span className={LABEL}>Delivery charge</span>
+              <input data-line-input type="number" min="0" value={deliveryCharge} onChange={(e) => setDeliveryCharge(e.target.value)} className={`${FIELD} font-mono`} />
+            </div>
+          )}
+          <div className={orderType === "delivery" ? "" : "col-span-2"}>
+            <span className={LABEL}>Payment method</span>
+            <select value={method} onChange={(e) => setMethod(e.target.value)} className={FIELD}>
+              {methods.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {receiptDelivery > 0 && (
+          <div className="mb-1 flex justify-between text-sm text-ink-mid">
+            <span>Subtotal</span>
+            <span className="font-mono">Rs {fmt(receiptSub)}</span>
+          </div>
+        )}
+        {receiptDelivery > 0 && (
           <div className="mb-1 flex justify-between text-sm text-ink-mid">
             <span>Delivery</span>
-            <span className="font-mono">Rs {fmt(delivery)}</span>
+            <span className="font-mono">Rs {fmt(receiptDelivery)}</span>
           </div>
         )}
         <div className="mb-3 flex justify-between text-lg font-bold">
           <span>Total</span>
-          <span className="font-mono">Rs {fmt(cartTotal)}</span>
+          <span className="font-mono">Rs {fmt(receiptTotal)}</span>
         </div>
-        <button
-          onClick={openCheckout}
-          disabled={cart.length === 0}
-          className="w-full rounded-xl bg-chili-500 py-3 text-base font-bold text-white transition hover:bg-chili-600 disabled:opacity-40"
-        >
-          Checkout <kbd className="ml-1 rounded border border-white/40 px-1 text-[10px] font-normal opacity-80">Enter</kbd>
-        </button>
+        <div className="grid grid-cols-3 gap-2">
+          <button
+            onClick={() => finish("save")}
+            disabled={busy !== null || cart.length === 0}
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-line px-2 py-2.5 text-sm font-semibold hover:bg-raised disabled:opacity-40"
+          >
+            {busy === "save" ? <Spinner size={14} /> : <Save size={14} />} Save
+          </button>
+          <button
+            onClick={() => finish("kitchen")}
+            disabled={busy !== null || cart.length === 0}
+            title="Enter"
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-chili-500 px-2 py-2.5 text-sm font-semibold text-chili-400 hover:bg-chili-500/10 disabled:opacity-40"
+          >
+            {busy === "kitchen" ? <Spinner size={14} /> : <ChefHat size={14} />} Kitchen
+          </button>
+          <button
+            onClick={() => finish("print")}
+            disabled={busy !== null || cart.length === 0}
+            title="Prints the kitchen slip and the invoice"
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-chili-500 px-2 py-2.5 text-sm font-bold text-white hover:bg-chili-600 disabled:opacity-40"
+          >
+            {busy === "print" ? <Spinner size={14} /> : <Printer size={14} />} Print
+          </button>
+        </div>
+        <p className="mt-2 text-center text-[11px] text-ink-faint">
+          Kitchen = kitchen slip (<kbd className="rounded border border-line px-1">Enter</kbd>) &middot; Print = kitchen slip + invoice
+        </p>
       </div>
     </div>
   );
@@ -643,136 +725,13 @@ export function PosClient({
             <span className="flex items-center gap-2">
               <ShoppingBag size={18} /> {itemCount} item(s)
             </span>
-            <span className="font-mono">Rs {fmt(cartTotal)}</span>
+            <span className="font-mono">Rs {fmt(receiptTotal)}</span>
           </button>
         </div>
       )}
 
       {/* ================= order panel ================= */}
-      <aside className={`${sheetOpen ? "fixed inset-0 z-30 bg-surface" : "hidden"} md:static md:block md:w-[340px] md:shrink-0 md:border-l md:border-line md:bg-surface`}>{orderPanel}</aside>
-
-      {/* ================= checkout: editable receipt ================= */}
-      <Modal
-        open={checkoutOpen}
-        onClose={() => setCheckoutOpen(false)}
-        title="Checkout"
-        width="max-w-2xl"
-        busy={busy !== null}
-        footer={
-          <>
-            <button onClick={() => finish("save")} disabled={busy !== null} className="inline-flex items-center gap-1.5 rounded-lg border border-line px-4 py-2 text-sm font-semibold hover:bg-raised disabled:opacity-50">
-              {busy === "save" ? <Spinner size={14} /> : <Save size={14} />} Save
-            </button>
-            <button onClick={() => finish("kitchen")} disabled={busy !== null} title="Enter" className="inline-flex items-center gap-1.5 rounded-lg border border-chili-500 px-4 py-2 text-sm font-semibold text-chili-400 hover:bg-chili-500/10 disabled:opacity-50">
-              {busy === "kitchen" ? <Spinner size={14} /> : <ChefHat size={14} />} Kitchen print
-              <kbd className="rounded border border-chili-500/40 px-1 text-[10px] font-normal opacity-70">Enter</kbd>
-            </button>
-            <button onClick={() => finish("print")} disabled={busy !== null} title="Prints the kitchen slip and the invoice" className="inline-flex items-center gap-1.5 rounded-lg bg-chili-500 px-4 py-2 text-sm font-semibold text-white hover:bg-chili-600 disabled:opacity-50">
-              {busy === "print" ? <Spinner size={14} /> : <Printer size={14} />} Print
-            </button>
-          </>
-        }
-      >
-        {error && <p className="rounded-lg border border-crimson-500/30 bg-crimson-500/10 px-3 py-2 text-xs text-crimson-400">{error}</p>}
-        <p className="text-xs text-ink-faint">
-          {TYPE_LABEL[orderType]}
-          {custName && ` - ${custName}`}. Change a quantity or price, or the numbers in a ( ) description. Saving or printing completes the order.
-        </p>
-
-        <div className="overflow-x-auto rounded-lg border border-line">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line bg-raised text-[11px] uppercase tracking-wide text-ink-faint">
-                <th className="px-3 py-2 text-left">Item</th>
-                <th className="w-20 px-2 py-2 text-right">Qty</th>
-                <th className="w-28 px-2 py-2 text-right">Price</th>
-                <th className="w-32 px-2 py-2 text-right">Total</th>
-                <th className="w-8" />
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((l, i) => (
-                <tr key={l.productId} className="border-b border-line last:border-0">
-                  <td dir="auto" className="px-3 py-2">
-                    <div className="text-base font-semibold">{`${l.prefix} ${l.suffix}`.trim() || "-"}</div>
-                    {l.parts && (
-                      <div dir="ltr" className="mt-1 flex flex-wrap items-center gap-1 text-sm text-ink-mid">
-                        <span>(</span>
-                        {l.parts.map((t, k) =>
-                          k % 2 ? (
-                            <input
-                              key={k}
-                              type="number"
-                              step="any"
-                              value={t}
-                              onChange={(e) => editDesc(i, k, e.target.value)}
-                              aria-label="Description number"
-                              className="w-16 rounded-md border border-line bg-raised px-1.5 py-0.5 text-center font-mono text-sm outline-none focus:border-chili-500"
-                            />
-                          ) : (
-                            <span key={k} dir="auto" className="whitespace-pre">{t}</span>
-                          )
-                        )}
-                        <span>)</span>
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <input type="number" min="0" step="1" value={l.qty} onChange={(e) => editLine(i, "qty", e.target.value)} className={`${FIELD} text-right font-mono`} />
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <input type="number" min="0" step="any" value={l.price} onChange={(e) => editLine(i, "price", e.target.value)} className={`${FIELD} text-right font-mono`} />
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <input readOnly tabIndex={-1} value={l.total} aria-label="Line total" className={`${FIELD} cursor-default text-right font-mono font-semibold opacity-80`} />
-                  </td>
-                  <td className="pr-2 text-center">
-                    <button onClick={() => setLines((p) => p.filter((_, idx) => idx !== i))} aria-label="Remove line" className="text-ink-faint hover:text-crimson-400">
-                      <Trash2 size={14} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {orderType === "delivery" && (
-            <div>
-              <span className={LABEL}>Delivery charge (Rs)</span>
-              <input type="number" min="0" value={coDelivery} onChange={(e) => setCoDelivery(e.target.value)} className={`${FIELD} font-mono`} />
-            </div>
-          )}
-          <div>
-            <span className={LABEL}>Payment method</span>
-            <select value={method} onChange={(e) => setMethod(e.target.value)} className={FIELD}>
-              {methods.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="space-y-1 border-t border-dashed border-line pt-3 text-sm">
-          <div className="flex justify-between text-ink-mid">
-            <span>Subtotal</span>
-            <span className="font-mono">Rs {fmt(receiptSub)}</span>
-          </div>
-          {receiptDelivery > 0 && (
-            <div className="flex justify-between text-ink-mid">
-              <span>Delivery</span>
-              <span className="font-mono">Rs {fmt(receiptDelivery)}</span>
-            </div>
-          )}
-          <div className="flex justify-between text-lg font-bold">
-            <span>Total</span>
-            <span className="font-mono">Rs {fmt(receiptTotal)}</span>
-          </div>
-        </div>
-      </Modal>
+      <aside className={`${sheetOpen ? "fixed inset-0 z-30 bg-surface" : "hidden"} md:static md:block md:w-[420px] md:shrink-0 md:border-l md:border-line md:bg-surface`}>{orderPanel}</aside>
     </main>
   );
 }

@@ -13,11 +13,13 @@ Pages: Dashboard, POS, Sales, Menu, Expenses, Accounts, Notifications, Settings.
   When it is on, the invoice labels (Subtotal, Delivery, Total) are Urdu too.
 - POS: no tables, no order or item notes, no tax, no discount, no hold tickets, no customer search.
   Order types are Dine in / Takeaway / Delivery (delivery has name, phone, address and a delivery charge).
-- Checkout is an editable receipt: quantity and unit price are editable, the line total is read-only (qty x price).
-  If a product name has a "( )" part, it is treated as a description and the numbers inside it can be changed for that order
-  (for example "Fries (250g)" -> "Fries (300g)"). Delivery charge is editable too.
+- There is no checkout popup: the order sidebar is the checkout. Each line has an editable quantity and unit price and a
+  read-only total (qty x price). If a product name has a "( )" part, it is a description and the numbers inside it can be
+  changed for that order (for example "Fries (250g)" -> "Fries (300g)"). The Copy icon on a line adds another line of the same
+  product right under it with its own price (one plate at Rs 150 and one at Rs 200). Delivery charge and payment method are
+  in the sidebar too.
 - Kitchen print is drawn as one image: black "Kitchen Print" band, boxed order type, customer ("Walking Customer" by default), inverted order number with date and time, an Urdu item table (تعداد / آئٹم نام / رقم) with each line's amount, the cashier and total quantity (کل تعداد), and the total amount (کل رقم). See `app/pos` + `lib/posPrint.ts` (`renderKitchenSlip`).
-- Checkout buttons: **Save**, **Kitchen print** and **Print** (kitchen slip + invoice together). All three complete the order as fully paid. Keyboard: **Enter** on the POS screen opens checkout; **Enter** inside the checkout popup does the Kitchen print.
+- Sidebar buttons: **Save**, **Kitchen** (kitchen slip) and **Print** (kitchen slip + invoice). All three complete the order as fully paid. **Enter** = Kitchen print.
 - Tax is forced to 0 on the server (`app/api/sales/route.ts` and `app/api/device/sales/route.ts`), whatever the full app's
   tax settings say.
 - Removed: ticket rail, unpaid orders, riders, customers, inventory, restock, recipes, suppliers, ledgers, employees,
@@ -31,7 +33,7 @@ Pages: Dashboard, POS, Sales, Menu, Expenses, Accounts, Notifications, Settings.
   expense categories, payment methods (add, remove, reorder), settings and marking notifications read. They upload, oldest
   first, as soon as the cloud answers again, as the cashier who made them. A change the server refuses is kept and shown
   in the sync status.
-- Accounts also has a "Products sold" table (quantity and total amount per product, for the selected date range) and Sales has a Receipt button that reprints an order's customer receipt.
+- Accounts shows income / expense / net for the date range and, instead of the ledger, one row per menu product with how many were sold and the amount (products with no sales show 0; there is a search box and a PDF button). Sales has a Receipt button that reprints an order's customer receipt.
 - Dashboard and Accounts show the last synced numbers; they don't include expenses added offline until the next sync.
 - Not available offline: uploading photos for menu items.
 - This needs the matching shell change (`lite-shell-offline.patch` in the shell repo).
