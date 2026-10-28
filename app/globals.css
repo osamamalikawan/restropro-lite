@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   DESIGN TOKENS — same chili/basil/turmeric identity as the
+   original prototype, now as CSS variables so light/dark can
+   actually be switched instead of being hardcoded Tailwind
+   neutral-* classes everywhere. Values are space-separated RGB
+   channels (not hex) so Tailwind's opacity modifiers work, e.g.
+   `bg-raised/50` — see tailwind.config.ts's `rgb(var(...) / <alpha-value>)`.
+   ============================================================ */
+:root {
+  --bg-canvas: 22 19 16;      /* #161310 */
+  --bg-surface: 30 26 22;     /* #1e1a16 */
+  --bg-raised: 38 33 28;      /* #26211c */
+  --bg-hover: 46 39 33;       /* #2e2721 */
+  --line: 56 49 42;           /* #38312a */
+  --line-soft: 42 36 32;      /* #2a2420 */
+  --ink-strong: 246 240 230;  /* #f6f0e6 */
+  --ink-mid: 203 192 176;     /* #cbc0b0 */
+  --ink-faint: 140 128 114;   /* #8c8072 */
+}
+[data-theme="light"] {
+  --bg-canvas: 247 241 230;   /* #f7f1e6 */
+  --bg-surface: 255 253 248;  /* #fffdf8 */
+  --bg-raised: 255 255 255;   /* #ffffff */
+  --bg-hover: 241 233 217;    /* #f1e9d9 */
+  --line: 227 215 190;        /* #e3d7be */
+  --line-soft: 236 226 204;   /* #ece2cc */
+  --ink-strong: 36 28 18;     /* #241c12 */
+  --ink-mid: 92 81 64;        /* #5c5140 */
+  --ink-faint: 140 128 103;   /* #8c8067 */
+}
+
+body {
+  background: rgb(var(--bg-canvas));
+  color: rgb(var(--ink-strong));
+  transition: background .25s ease, color .25s ease;
+}
+
+/* Staff-picker card entrance — ported from the prototype's gsap.fromTo({opacity:0,y:16})
+   stagger (login screen used gsap; this app has no animation library, so plain CSS
+   keyframes reproduce the same fade + rise-up feel without adding a dependency). */
+@keyframes emp-card-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.emp-card-in {
+  animation: emp-card-in .5s cubic-bezier(.19,1,.22,1) both;
+}
+
+
+/* ============================================================
+   THEMED SCROLLBARS — thin, follow the light/dark tokens.
+   Applies everywhere; .rp-scroll (sidebar, POS panels) keeps the
+   track invisible until hover so lists stay clean.
+   ============================================================ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--line)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--line));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--ink-faint));
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.rp-scroll {
+  scrollbar-color: transparent transparent;
+}
+.rp-scroll:hover {
+  scrollbar-color: rgb(var(--line)) transparent;
+}
+.rp-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+.rp-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--line));
+}
+.rp-scroll:hover::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--ink-faint));
+}
+
+/* restropro-mobile-fixes */
+@media (max-width: 768px) {
+  /* tables scroll sideways instead of being clipped */
+  table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x pan-y;
+  }
+  /* let flex/grid parents shrink so the table can scroll inside them */
+  main, section, article { min-width: 0; }
+}
+/* end restropro-mobile-fixes */
