@@ -23,11 +23,22 @@ type Row = {
  * GET /api/notifications
  * Everyone in the tenant can read. Returns newest-first plus an unread count.
  */
-export async function GET() {
+export async function GET(req: Request) {
   const session = await requireStaffSession()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const admin = createAdminClient()
+
+  // ?count=1 -> the bell's background poll: only the unread number, no rows, no joins, no name lookups.
+  if (new URL(req.url).searchParams.get('count') === '1') {
+    const { count, error: cErr } = await admin
+      .from('notification_recipients')
+      .select('id, notifications!inner(id)', { count: 'exact', head: true })
+      .eq('restaurant_id', session.restaurantId)
+      .is('read_at', null)
+    if (cErr) return NextResponse.json({ error: cErr.message }, { status: 500 })
+    return NextResponse.json({ unreadCount: count ?? 0 })
+  }
 
   const { data, error } = await admin
     .from('notification_recipients')

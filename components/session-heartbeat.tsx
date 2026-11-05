@@ -2,9 +2,9 @@
 import { useEffect } from "react";
 import { isTauri } from "@/lib/platform";
 
-const BEAT_MS = 20_000;
+const BEAT_MS = 45_000; // idle sign-out is never shorter than 2 min, so 45 s is safe
 
-/** Tells the server this staff session is still open (every 20 s while the app is on screen), so a closed tab or a
+/** Tells the server this staff session is still open (every 45 s while the app is on screen), so a closed tab or a
  *  switched-off device is signed out automatically and - with "one device per user" on - frees the user to sign in
  *  somewhere else. If the server says the session is over (signed in on another device, idle too long), the page
  *  goes to the login screen. Renders nothing. The desktop app keeps its own session and is skipped. */

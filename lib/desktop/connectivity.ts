@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 /** Is the cloud reachable? Asks the desktop app (a quick connection test, not the browser's
  *  unreliable `navigator.onLine`, which stays "true" on a LAN with no internet). Starts as
  *  "online" so a screen never flashes an offline message while the first check runs. */
-export function useOnline(pollMs = 8000) {
+export function useOnline(pollMs = 15000) {
   const [online, setOnline] = useState(true);
 
   const recheck = useCallback(async () => {

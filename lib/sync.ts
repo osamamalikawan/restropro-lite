@@ -81,21 +81,36 @@ export async function flushOutbox(): Promise<void> {
  *  periodically. (No Supabase Realtime subscription here — Realtime respects the same RLS
  *  as normal queries, so it has the identical "silently empty" problem for staff-only tables
  *  as a direct browser query would. A cross-terminal near-real-time update would need a
- *  small server-sent-events or broadcast-channel proxy; the 30s poll below is the simple,
+ *  small server-sent-events or broadcast-channel proxy; the poll below is the simple,
  *  correct-under-RLS stand-in for now.) */
 export function startBackgroundSync(store: "employees" | "products", restaurantId: string) {
-  const interval = setInterval(() => {
-    flushOutbox();
+  const PULL_EVERY_MS = 180_000;
+  let lastPull = Date.now();
+  const pull = () => {
+    lastPull = Date.now();
     pullAndCache(store, restaurantId);
+  };
+  // Every 30 s: upload queued changes (only when there are any - reading the local outbox costs nothing) and
+  // re-download the list at most every 3 min. Nothing at all while the tab is hidden.
+  const interval = setInterval(async () => {
+    if (document.hidden) return;
+    const pending = await readOutbox().catch(() => []);
+    if (pending.length) flushOutbox();
+    if (Date.now() - lastPull >= PULL_EVERY_MS) pull();
   }, 30_000);
   const onOnline = () => {
     flushOutbox();
-    pullAndCache(store, restaurantId);
+    pull();
+  };
+  const onVisible = () => {
+    if (!document.hidden && Date.now() - lastPull >= 60_000) pull();
   };
   window.addEventListener("online", onOnline);
+  document.addEventListener("visibilitychange", onVisible);
 
   return () => {
     clearInterval(interval);
     window.removeEventListener("online", onOnline);
+    document.removeEventListener("visibilitychange", onVisible);
   };
 }

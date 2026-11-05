@@ -163,7 +163,7 @@ export function PosClient({
         .catch(() => {});
     };
     refresh();
-    const timer = isTauri() ? setInterval(refresh, 20_000) : null;
+    const timer = isTauri() ? setInterval(refresh, 300_000) : null; // settings / payment methods rarely change (each call is a cloud request)
     return () => {
       cancelled = true;
       stop();

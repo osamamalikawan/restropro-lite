@@ -101,10 +101,18 @@ export async function getPermissionMatrix(restaurantId: string): Promise<Record<
  *  insert defaults for every known role whenever any one role's rows were absent, which hit
  *  a primary-key conflict — and therefore silently failed to seed anything — the moment a
  *  second role already had rows in the table). */
+const ACCESS_TTL_MS = 20_000;
+const accessCache = new Map<string, { at: number; access: Record<PermModule, boolean> }>();
+
 export async function getModuleAccess(restaurantId: string, role: Role): Promise<Record<PermModule, boolean>> {
   if (role === "admin") {
     return Object.fromEntries(PERMISSION_MODULES.map((m) => [m, true])) as Record<PermModule, boolean>;
   }
+  // Called on almost every request (hasModuleAccess), so keep the answer for a few seconds per server instance
+  // instead of querying role_permissions each time. A permission change shows up within ACCESS_TTL_MS.
+  const key = `${restaurantId}:${role}`;
+  const hit = accessCache.get(key);
+  if (hit && Date.now() - hit.at < ACCESS_TTL_MS) return hit.access;
   const admin = createAdminClient();
   let { data } = await admin
     .from("role_permissions")
@@ -120,6 +128,7 @@ export async function getModuleAccess(restaurantId: string, role: Role): Promise
 
   const access = Object.fromEntries(PERMISSION_MODULES.map((m) => [m, false])) as Record<PermModule, boolean>;
   for (const row of data ?? []) access[row.module as PermModule] = row.can_view;
+  accessCache.set(key, { at: Date.now(), access });
   return access;
 }
 
@@ -137,6 +146,7 @@ export async function hasModuleAccess(restaurantId: string, role: Role, module: 
  *  only tracks view access per module, which is what actually gates navigation/pages here). */
 export async function setModuleAccess(restaurantId: string, role: Role, module: PermModule, canView: boolean) {
   if (role === "admin") return; // Admin's row is always all-true and not editable, same as the prototype.
+  accessCache.delete(`${restaurantId}:${role}`);
   const admin = createAdminClient();
   return admin
     .from("role_permissions")

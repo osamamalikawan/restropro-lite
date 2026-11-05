@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Bell, BellOff, Check, CheckCheck, RotateCcw } from 'lucide-react'
+import { startPolling } from '@/lib/poll'
 
 type Notification = {
   recipientId: string
@@ -26,7 +27,7 @@ function when(iso: string) {
 
 /**
  * Topbar bell. Click opens an inline popup with the recent notifications
- * (no navigation). Polls the unread count every 60s and on tab refocus;
+ * (no navigation). Polls the unread count every 3 min (only while visible; a tiny count-only query) and on tab refocus;
  * fetches the full list only when the popup is opened.
  */
 const PANEL_WIDTH = 352 // px — matches w-[22rem] below
@@ -46,7 +47,7 @@ export default function NotificationBell() {
 
   const loadCount = useCallback(async () => {
     try {
-      const res = await fetch('/api/notifications', { cache: 'no-store' })
+      const res = await fetch('/api/notifications?count=1', { cache: 'no-store' })
       if (!res.ok) return
       const json = await res.json()
       setUnread(json.unreadCount ?? 0)
@@ -75,10 +76,10 @@ export default function NotificationBell() {
   // Background unread-count polling, independent of the popup being open.
   useEffect(() => {
     loadCount()
-    const interval = setInterval(loadCount, 60_000)
+    const stopPoll = startPolling(loadCount, { visibleMs: 180_000, hiddenMs: null })
     window.addEventListener('focus', loadCount)
     return () => {
-      clearInterval(interval)
+      stopPoll()
       window.removeEventListener('focus', loadCount)
     }
   }, [loadCount])
